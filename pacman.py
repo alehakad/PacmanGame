@@ -7,275 +7,67 @@ import time
 import pygame as pg
 from pygame.locals import *
 
-from utils.assets import AssetManager
+from config.init_pygame import init_pygame
+
+init_pygame()
+
+from config.game_state import GameState
+from config.settings import GameSettings
+from models.board_elements import Button, Square, Text
+from models.heros import Ghost, PacMan
+from models.menu_elements import MovingEye
 from utils import astar
 from utils.colors import Colors
 
 
-# main
-pg.init()
-# load images
-assets = AssetManager()
-assets.load_images()
-pg.display.set_caption('Pac-Man')
-DISPLAYSURF = pg.display.set_mode((1010, 730), 0, 32)
-FPS = 50  # кадров в секунду
-fps_eat = 30  # кадров в секунду, еда
-fpsClock = pg.time.Clock()
-# координаты начала,конца и центра
-upx, upy = 20, 20
-dx, dy = 980, 660
-cx, cy = (dx + upx) // 2, (dy + upy) // 2
+def init_heroes():
+    GameState.pman = PacMan(GameSettings.upx + 40, GameSettings.upy, 2)
 
-# cursor
-pg.mouse.set_cursor(*pg.cursors.broken_x)
-
-# количество съеденной еды
-eaten_food = 0
-# музыка
-pg.mixer.init()
-pg.mixer.music.load(r'bg_music.mp3')
-pg.mixer.music.play(-1, 0.0)
-pg.mixer.music.pause()
-
-# все приведения
-ghosts = []
-# анимация курсора (глаз)
-eyes = []
-# тексты
-texts = []
-# игровое поле - все клетки
-squares_all = {}
-# граф поля - список списков соседей
-game_graph = {}
-# все кнопки
-buttons = []
-for i in range(upx, dx + 1, 40):
-    for j in range(upy, dy + 1, 40):
-        game_graph.update({(i, j): []})
-for i in game_graph.keys():
-    v = list([((i[0] + 40) % (dx + upx), i[1]), ((i[0] - 40) % (dx + upx), i[1]), (i[0], (i[1] + 40) % (dy + upy)),
-              (i[0], (i[1] - 40) % (dy + upy))])
-    for k in v:
-        game_graph[i].append(k)
-default_graph = copy.deepcopy(game_graph)
+    b_gh = Ghost(GameSettings.cx - 3 * 40, GameSettings.cy + 3 * 40, "b", 3)
+    r_gh = Ghost(GameSettings.cx + 3 * 40, GameSettings.cy - 3 * 40, "r", 3)
+    p_gh = Ghost(GameSettings.cx + 3 * 40, GameSettings.cy + 3 * 40, "p", 3)
+    o_gh = Ghost(GameSettings.cx - 3 * 40, GameSettings.cy - 3 * 40, "o", 3)
 
 
-class Hero():
-    def __init__(self, x, y, v=0):
-        self.rect = None
-        self.x = x
-        self.y = y
-        self.startx = x
-        self.starty = y
-        self.v = v
-        self.v_stop = v
-        self.motion = "STOP"
+def init_field():
+    # заполнение поля
+    for i in range(GameSettings.upx, GameSettings.dx + 1, 40):
+        for j in range(GameSettings.upy, GameSettings.dy + 1, 40):
+            Square(i, j)
 
-    def show(self):
-        self.rect = self.image.get_rect(center=(self.x, self.y))
-        DISPLAYSURF.blit(self.image, self.rect)
+    GameState.score = Text(15, 'Score: 0', Colors.White.value, Colors.Black.value,
+                           GameSettings.upx + 40,
+                           GameSettings.dy + 45)
 
-    def get_sq(self):  # определение клетки игрока
-        xsq = int(round(abs(self.x - upx) / 40) * 40 + upx)
-        ysq = int(round(abs(self.y - upy) / 40) * 40 + upy)
-        return xsq, ysq
+    GameState.bs = Button(950, 710, "sound_off")
+    GameState.bp = Button(990, 710, "pause")
+    GameState.hm = Button(910, 710, "intro")
 
 
-class PacMan(Hero):
-    def __init__(self, x, y, v):
-        Hero.__init__(self, x, y, v)
-        self.image = assets.get_image("p_stop")
-        self.lives = 3  # оставшиеся жизни
-        self.pts = 0  # набранные очки
-        self.eat = 0  # для смены картинок
-
-
-class Ghost(Hero):
-    def __init__(self, x, y, color, v):
-        Hero.__init__(self, x, y, v)
-        if color == 'b':
-            self.image = assets.get_image("gh_b")
-            self.default_image = assets.get_image("gh_b")
-            self.hide = (dx - 40, dy)  # клетка разбегания
-        if color == 'p':
-            self.image = assets.get_image("gh_p")
-            self.default_image = assets.get_image("gh_p")
-            self.hide = (dx - 40, upy)
-        if color == 'r':
-            self.image = assets.get_image("gh_r")
-            self.default_image = assets.get_image("gh_r")
-            self.hide = (upx + 40, upy)
-        if color == 'o':
-            self.image = assets.get_image("gh_o")
-            self.default_image = assets.get_image("gh_o")
-            self.hide = (upx + 40, dy)
-        self.color = color
-        # частота смены картинок
-        self.i = 0
-        self.ghm = 0
-
-        self.mode = "chase"
-        self.last_sq = game_graph[(x, y)][0]
-
-        ghosts.append(self)
-
-    def aim(self):  # целевые клетки приведений
-        sq = pman.get_sq()
-        col = self.color
-        if col == "b":  # для синего цель - конец отрезка между кр. и пк. доработать
-            return random.choice(list(squares_all.keys()))
-        if col == "p":  # для розового цель - +4 клетки в сторону движения пэкмана
-            if pman.motion == "STOP":
-                return sq
-            if pman.motion == "UP":
-                for i in range(3, 0, -1):
-
-                    if (sq[0], (sq[1] - i * 40) % (dy + 40 - upy)) in game_graph.keys():
-                        return (sq[0], (sq[1] - i * 40) % (dy + 40 - upy))
-                return sq
-            if pman.motion == "DOWN":
-                for i in range(3, 0, -1):
-
-                    if (sq[0], (sq[1] + i * 40) % (dy + 40 - upy)) in game_graph.keys():
-                        return (sq[0], (sq[1] + i * 40) % (dy + 40 - upy))
-                return sq
-            if pman.motion == "RIGHT":
-                for i in range(3, 0, -1):
-
-                    if ((sq[0] + i * 40) % (dx + 40 - upx), sq[1]) in game_graph.keys():
-                        return ((sq[0] + i * 40) % (dx + 40 - upx), sq[1])
-                return sq
-            if pman.motion == "LEFT":
-                for i in range(3, 0, -1):
-
-                    if ((sq[0] - i * 40) % (dx + 40 - upx), sq[1]) in game_graph.keys():
-                        return ((sq[0] - i * 40) % (dx + 40 - upx), sq[1])
-
-                return sq
-        if col == "o":  # для орж цель - сам пэкман, если до него меньше 8 клеток(иначе левый нижний угол)
-            res = astar.a(sq, self.get_sq(), game_graph)
-            if res and len(res) >= 8:
-                return sq
-            else:
-                return (upx + 40, dy)
-        if col == "r":  # для красного цель - сам пэкман
-            return sq
-
-
-class Square():  # клетки поля - в каждом еда - границы орределяют положение игрока
-    def __init__(self, x, y, sides=[], color=Colors.Red.value, b_color=Colors.Blue.value):
-        self.x = x
-        self.y = y
-        self.color = color
-        self.b_color = b_color  # цвет границы
-        self.food = pg.Rect(self.x, self.y, 5, 5)  # еда
-        self.pts = 10
-        self.e = False  # энерджайзер
-        self.img = False  # бонус
-        self.img_rect = False  # бонус
-        self.centerx = self.food.centerx
-        self.centery = self.food.centery
-        self.borders = []
-        self.get_borders(sides)
-        self.sides = sides
-        squares_all.update({(self.x, self.y): self})
-
-    def draw_food(self):
-        pg.draw.rect(DISPLAYSURF, self.color, self.food)
-        if self.img and self.color != Colors.Black.value:
-            DISPLAYSURF.blit(self.img, self.img_rect)
-
-    def get_borders(self, sides):
-        self.borders = []
-        for i in sides:
-            if i == "left":
-                self.borders.append(pg.Rect(self.centerx - 20, self.centery - 20, 1, 41))
-            if i == "right":
-                self.borders.append(pg.Rect(self.centerx + 20, self.centery - 20, 1, 41))
-            if i == "up":
-                self.borders.append(pg.Rect(self.centerx - 20, self.centery - 20, 40, 1))
-            if i == "down":
-                self.borders.append(pg.Rect(self.centerx - 20, self.centery + 20, 40, 1))
-
-    def draw_lines(self):
-        for i in self.borders:
-            pg.draw.rect(DISPLAYSURF, self.b_color, i)
-
-
-# заполнение поля
-for i in range(upx, dx + 1, 40):
-    for j in range(upy, dy + 1, 40):
-        Square(i, j)
-
-
-# кнопки
-class Button():
-    def __init__(self, x, y, t):
-        self.x = x
-        self.y = y
-        if t == "sound_off":
-            self.sound = False
-            self.image = assets.get_image("sound_off")
-        if t == "pause":
-            self.image = assets.get_image("b_pause")
-        if t == "intro":
-            self.image = assets.get_image("home")
-        buttons.append(self)
-
-    def show(self):
-        self.rect = self.image.get_rect(center=(self.x, self.y))
-        DISPLAYSURF.blit(self.image, self.rect)
-
-
-# текст
-class text():
-    def __init__(self, size, text, fg, bg, x, y):
-        self.fontObj = pg.font.SysFont('microsoftsansserif', size)  # change
-        self.text = text
-        self.x = x
-        self.y = y
-        self.textSurfaceObj = self.fontObj.render(self.text, True, fg, bg)
-        self.textRectObj = self.textSurfaceObj.get_rect()
-        self.textRectObj.center = (x, y)
-        texts.append(self)
-
-    def draw(self):
-        DISPLAYSURF.blit(self.textSurfaceObj, self.textRectObj)
-
-
-# глаз
-class moving_eye():
-    def __init__(self, r1, r2, start_x, start_y):
-        self.r1 = r1
-        self.r2 = r2
-        self.start_x = start_x
-        self.start_y = start_y
-        eyes.append(self)
-
-    def draw(self):
-        pg.draw.circle(DISPLAYSURF, Colors.White.value, (self.start_x, self.start_y), self.r1)
-        r = ((pg.mouse.get_pos()[0] - self.start_x) ** 2 + (pg.mouse.get_pos()[1] - self.start_y) ** 2) ** 0.5
-        if r != 0:
-            eye_x = int(self.start_x + self.r2 * (pg.mouse.get_pos()[0] - self.start_x) / r)
-            eye_y = int(self.start_y + self.r2 * (pg.mouse.get_pos()[1] - self.start_y) / r)
-        else:
-            eye_x = self.start_x
-            eye_y = self.start_y
-        pg.draw.circle(DISPLAYSURF, Colors.Black.value, (eye_x, eye_y), self.r2)
+def init_music():
+    # музыка
+    pg.mixer.init()
+    pg.mixer.music.load(r'bg_music.mp3')
+    pg.mixer.music.play(-1, 0.0)
+    pg.mixer.music.pause()
 
 
 def right_way(side):  # можно ли пойти в данном направлении
     if side == "down":
-        test_rect = pman.image.get_rect(center=(pman.x, pman.y + pman.v_stop))
-        psq = pman.get_sq()
-        chl = [squares_all[psq]]
-        for sq in default_graph[psq]:
-            chl.append(squares_all[sq])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
+        test_rect = GameState.pman.image.get_rect(
+            center=(GameState.pman.x, GameState.pman.y + GameState.pman.v_stop))
+        psq = GameState.pman.get_sq()
+        chl = [GameSettings.squares_all[psq]]
+        for sq in GameSettings.default_graph[psq]:
+            chl.append(GameSettings.squares_all[sq])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
 
         for sq in chl:
             for b in sq.borders:
@@ -283,15 +75,20 @@ def right_way(side):  # можно ли пойти в данном направ�
                     return False
         return True
     if side == "up":
-        test_rect = pman.image.get_rect(center=(pman.x, pman.y - pman.v_stop))
-        psq = pman.get_sq()
-        chl = [squares_all[psq]]
-        for sq in default_graph[psq]:
-            chl.append(squares_all[sq])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
+        test_rect = GameState.pman.image.get_rect(
+            center=(GameState.pman.x, GameState.pman.y - GameState.pman.v_stop))
+        psq = GameState.pman.get_sq()
+        chl = [GameSettings.squares_all[psq]]
+        for sq in GameSettings.default_graph[psq]:
+            chl.append(GameSettings.squares_all[sq])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
         for sq in chl:
 
             for b in sq.borders:
@@ -299,15 +96,20 @@ def right_way(side):  # можно ли пойти в данном направ�
                     return False
         return True
     if side == "left":
-        test_rect = pman.image.get_rect(center=(pman.x - pman.v_stop, pman.y))
-        psq = pman.get_sq()
-        chl = [squares_all[psq]]
-        for sq in default_graph[psq]:
-            chl.append(squares_all[sq])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
+        test_rect = GameState.pman.image.get_rect(
+            center=(GameState.pman.x - GameState.pman.v_stop, GameState.pman.y))
+        psq = GameState.pman.get_sq()
+        chl = [GameSettings.squares_all[psq]]
+        for sq in GameSettings.default_graph[psq]:
+            chl.append(GameSettings.squares_all[sq])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
 
         for sq in chl:
 
@@ -316,18 +118,24 @@ def right_way(side):  # можно ли пойти в данном направ�
                     return False
         return True
     if side == "right":
-        test_rect = pman.image.get_rect(center=(pman.x + pman.v_stop, pman.y))
-        psq = pman.get_sq()
+        test_rect = GameState.pman.image.get_rect(
+            center=(GameState.pman.x + GameState.pman.v_stop, GameState.pman.y))
+        psq = GameState.pman.get_sq()
+        chl = []
         try:
-            chl = [squares_all[psq]]
+            chl = [GameSettings.squares_all[psq]]
         except:
-            print(pman.x, pman.y)
-        for sq in default_graph[psq]:
-            chl.append(squares_all[sq])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] + 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] + 40) % (dy + 40 - upy)])
-        chl.append(squares_all[(psq[0] - 40) % (dx + 40 - upx), (psq[1] - 40) % (dy + 40 - upy)])
+            print(GameState.pman.x, GameState.pman.y)
+        for sq in GameSettings.default_graph[psq]:
+            chl.append(GameSettings.squares_all[sq])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] + 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] + 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
+        chl.append(GameSettings.squares_all[(psq[0] - 40) % (GameSettings.dx + 40 - GameSettings.upx), (psq[1] - 40) % (
+                GameSettings.dy + 40 - GameSettings.upy)])
         for sq in chl:
             for b in sq.borders:
                 if test_rect.colliderect(b):
@@ -335,21 +143,10 @@ def right_way(side):  # можно ли пойти в данном направ�
         return True
 
 
-pman = PacMan(upx + 40, upy, 2)
-b_gh = Ghost(cx - 3 * 40, cy + 3 * 40, "b", 3)
-r_gh = Ghost(cx + 3 * 40, cy - 3 * 40, "r", 3)
-p_gh = Ghost(cx + 3 * 40, cy + 3 * 40, "p", 3)
-o_gh = Ghost(cx - 3 * 40, cy - 3 * 40, "o", 3)
-bs = Button(950, 710, "sound_off")
-bp = Button(990, 710, "pause")
-hm = Button(910, 710, "intro")
-max_score = 0
-
-
 # изменить границы квадрата
 def change_borders(x, y, sides, nofood=True, append=False):
-    sq1 = squares_all[(x, y)]
-    if not (append):
+    sq1 = GameSettings.squares_all[(x, y)]
+    if not append:
         sq1.get_borders(sides)
         sq1.sides = sides
     else:
@@ -363,54 +160,54 @@ def change_borders(x, y, sides, nofood=True, append=False):
     ysq = y
     vn = (xsq, ysq)  # текушая вершина
     # изменяем граф
-    nv = ((xsq - 40) % (dx + 40 - upx), ysq)
+    nv = ((xsq - 40) % (GameSettings.dx + 40 - GameSettings.upx), ysq)
     if "left" in sides:
-        if nv in game_graph[vn]:
-            game_graph[vn].remove(nv)
+        if nv in GameSettings.game_graph[vn]:
+            GameSettings.game_graph[vn].remove(nv)
             try:
-                game_graph[nv].remove(vn)
+                GameSettings.game_graph[nv].remove(vn)
             except:
                 print(nv, vn, 'l')
 
-    elif not (append) and not (nv in game_graph[vn]):
-        game_graph[vn].append(nv)
-        game_graph[nv].append(vn)
-    nv = ((xsq + 40) % (dx + 40 - upx), ysq)
+    elif not append and not (nv in GameSettings.game_graph[vn]):
+        GameSettings.game_graph[vn].append(nv)
+        GameSettings.game_graph[nv].append(vn)
+    nv = ((xsq + 40) % (GameSettings.dx + 40 - GameSettings.upx), ysq)
     if "right" in sides:
-        if nv in game_graph[vn]:
-            game_graph[vn].remove(nv)
+        if nv in GameSettings.game_graph[vn]:
+            GameSettings.game_graph[vn].remove(nv)
             try:
-                game_graph[nv].remove(vn)
+                GameSettings.game_graph[nv].remove(vn)
             except:
                 print(nv, vn, 'r')
 
-    elif not (append) and not (nv in game_graph[vn]):
-        game_graph[vn].append(nv)
-        game_graph[nv].append(vn)
-    nv = (xsq, (ysq - 40) % (dy + 40 - upy))
+    elif not append and not (nv in GameSettings.game_graph[vn]):
+        GameSettings.game_graph[vn].append(nv)
+        GameSettings.game_graph[nv].append(vn)
+    nv = (xsq, (ysq - 40) % (GameSettings.dy + 40 - GameSettings.upy))
     if "up" in sides:
-        if nv in game_graph[vn]:
-            game_graph[vn].remove(nv)
+        if nv in GameSettings.game_graph[vn]:
+            GameSettings.game_graph[vn].remove(nv)
             try:
-                game_graph[nv].remove(vn)
+                GameSettings.game_graph[nv].remove(vn)
             except:
                 print(nv, vn, 'u')
 
-    elif not (append) and not (nv in game_graph[vn]):
-        game_graph[vn].append(nv)
-        game_graph[nv].append(vn)
-    nv = (xsq, (ysq + 40) % (dy + 40 - upy))
+    elif not append and not (nv in GameSettings.game_graph[vn]):
+        GameSettings.game_graph[vn].append(nv)
+        GameSettings.game_graph[nv].append(vn)
+    nv = (xsq, (ysq + 40) % (GameSettings.dy + 40 - GameSettings.upy))
     if "down" in sides:
-        if nv in game_graph[vn]:
-            game_graph[vn].remove(nv)
+        if nv in GameSettings.game_graph[vn]:
+            GameSettings.game_graph[vn].remove(nv)
             try:
-                game_graph[nv].remove(vn)
+                GameSettings.game_graph[nv].remove(vn)
             except:
                 print(nv, vn, 'd')
 
-    elif not (append) and not (nv in game_graph[vn]):
-        game_graph[vn].append(nv)
-        game_graph[nv].append(vn)
+    elif not append and not (nv in GameSettings.game_graph[vn]):
+        GameSettings.game_graph[vn].append(nv)
+        GameSettings.game_graph[nv].append(vn)
 
 
 # нарисовать квадрат по двум крайним точкам
@@ -493,11 +290,9 @@ def maze(upx, upy, dx, dy, n):  # доделать
 
 # границы - разные для разных уровней
 def start_borders(n):  # все обнуляется
-    global max_score
-    max_score = 0
-    global game_graph
-    game_graph = copy.deepcopy(default_graph)
-    for sq in squares_all.values():
+    GameSettings.max_score = 0
+    GameSettings.game_graph = copy.deepcopy(GameSettings.default_graph)
+    for sq in GameSettings.squares_all.values():
         sq.color = Colors.Red.value
         sq.pts = 10
         sq.e = False
@@ -507,37 +302,37 @@ def start_borders(n):  # все обнуляется
         sq.sides = []
         sq.borders = []
         sq.get_borders([])
-    for gh in ghosts:
+    for gh in GameState.ghosts:
         gh.start_time = time.perf_counter()
         gh.image = gh.default_image
         gh.mode = "chase"
         gh.x, gh.y = gh.startx, gh.starty
-        gh.last_sq = game_graph[(gh.x, gh.y)][0]
+        gh.last_sq = GameSettings.game_graph[(gh.x, gh.y)][0]
         gh.i = 0
         gh.ghm = 0
-    pman.lives = 3
-    pman.x, pman.y = pman.startx, pman.starty
-    pman.motion = "STOP"
-    pman.pts = 0
+    GameState.pman.lives = 3
+    GameState.pman.x, GameState.pman.y = GameState.pman.startx, GameState.pman.starty
+    GameState.pman.motion = "STOP"
+    GameState.pman.pts = 0
     if n == 1:
-        change_borders(upx, upy, ["up", "left"], False)  # 40 по x и y между клетками
-        change_borders(dx, dy, ["right", "down"], False)
-        change_borders(upx, dy, ["down", "left"], False)
-        change_borders(dx, upy, ["up", "right"], False)
+        change_borders(GameSettings.upx, GameSettings.upy, ["up", "left"], False)  # 40 по x и y между клетками
+        change_borders(GameSettings.dx, GameSettings.dy, ["right", "down"], False)
+        change_borders(GameSettings.upx, GameSettings.dy, ["down", "left"], False)
+        change_borders(GameSettings.dx, GameSettings.upy, ["up", "right"], False)
         for i in range(1, 24):  # верхняя граница
             if i == 12:
                 continue
-            change_borders(upx + i * 40, upy, ["up"], False)
+            change_borders(GameSettings.upx + i * 40, GameSettings.upy, ["up"], False)
         for i in range(1, 24):  # нижняя граница
             if i == 12:
                 continue
-            change_borders(upx + i * 40, dy, ["down"], False)
+            change_borders(GameSettings.upx + i * 40, GameSettings.dy, ["down"], False)
         for i in range(2, 15):  # левая граница
             if i % 4:
-                change_borders(upx, upy + i * 40, ["left"], False)
+                change_borders(GameSettings.upx, GameSettings.upy + i * 40, ["left"], False)
         for i in range(2, 15):  # правая граница
             if i % 4:
-                change_borders(dx, upy + i * 40, ["right"], False)
+                change_borders(GameSettings.dx, GameSettings.upy + i * 40, ["right"], False)
         # четверть лабиринта - затем отразить
         for j in [1, -1]:
             if j == 1:
@@ -553,128 +348,160 @@ def start_borders(n):  # все обнуляется
                 else:
                     r = "left"
                     l = "right"
-                draw_rect(cx - i * 12 * 40, cy - j * 8 * 40, cx - i * 12 * 40, cy - j * 8 * 40)
-                draw_rect(cx - i * 10 * 40, cy - j * 8 * 40, cx - i * 10 * 40, cy - j * 8 * 40)
-                draw_rect(cx - i * 8 * 40, cy - j * 8 * 40, cx - i * 8 * 40, cy - j * 5 * 40)
-                draw_rect(cx - i * 40 * 4, cy - j * 8 * 40, cx - i * 40, cy - j * 8 * 40)
-                draw_rect(cx - i * 6 * 40, cy - j * 40 * 7, cx - i * 6 * 40, cy - j * 5 * 40)
-                draw_rect(cx - i * 6 * 40, cy - j * 6 * 40, cx - i * 4 * 40, cy - j * 6 * 40)
-                change_borders(cx - i * 6 * 40, cy - j * 6 * 40, [l])
-                draw_rect(cx - i * 12 * 40, cy - j * 6 * 40, cx - i * 10 * 40, cy - j * 5 * 40)
-                draw_rect(cx - i * 10 * 40, cy - j * 5 * 40, cx - i * 10 * 40, cy - j * 3 * 40)
-                change_borders(cx - i * 10 * 40, cy - j * 5 * 40, [r])
-                draw_rect(cx - i * 12 * 40, cy - j * 3 * 40, cx - i * 12 * 40, cy - j * 40)
-                draw_rect(cx - i * 12 * 40, cy - j * 40, cx - i * 10 * 40, cy - j * 40)
-                change_borders(cx - i * 12 * 40, cy - j * 40, [l, d])
-                draw_rect(cx - i * 8 * 40, cy - j * 3 * 40, cx - i * 8 * 40, cy - j * 40)
-                draw_rect(cx - i * 8 * 40, cy - j * 40, cx - i * 6 * 40, cy - j * 40)
-                change_borders(cx - i * 8 * 40, cy - j * 40, [l, d])
-                draw_rect(cx - i * 2 * 40, cy - j * 2 * 40, cx - i * 40, cy - j * 40)
-                draw_rect(cx - i * 6 * 40, cy - j * 3 * 40, cx - i * 4 * 40, cy - j * 3 * 40)
-                draw_rect(cx - i * 4 * 40, cy - j * 4 * 40, cx - i * 4 * 40, cy - j * 2 * 40)
-                draw_rect(cx - i * 4 * 40, cy - j * 4 * 40, cx - i * 40, cy - j * 4 * 40)
-                draw_rect(cx - i * 2 * 40, cy - j * 6 * 40, cx - i * 2 * 40, cy - j * 4 * 40)
-                change_borders(cx - i * 4 * 40, cy - j * 3 * 40, [r])
-                change_borders(cx - i * 4 * 40, cy - j * 4 * 40, [l, u])
-                change_borders(cx - i * 2 * 40, cy - j * 4 * 40, [d])
+                draw_rect(GameSettings.cx - i * 12 * 40, GameSettings.cy - j * 8 * 40, GameSettings.cx - i * 12 * 40,
+                          GameSettings.cy - j * 8 * 40)
+                draw_rect(GameSettings.cx - i * 10 * 40, GameSettings.cy - j * 8 * 40, GameSettings.cx - i * 10 * 40,
+                          GameSettings.cy - j * 8 * 40)
+                draw_rect(GameSettings.cx - i * 8 * 40, GameSettings.cy - j * 8 * 40, GameSettings.cx - i * 8 * 40,
+                          GameSettings.cy - j * 5 * 40)
+                draw_rect(GameSettings.cx - i * 40 * 4, GameSettings.cy - j * 8 * 40, GameSettings.cx - i * 40,
+                          GameSettings.cy - j * 8 * 40)
+                draw_rect(GameSettings.cx - i * 6 * 40, GameSettings.cy - j * 40 * 7, GameSettings.cx - i * 6 * 40,
+                          GameSettings.cy - j * 5 * 40)
+                draw_rect(GameSettings.cx - i * 6 * 40, GameSettings.cy - j * 6 * 40, GameSettings.cx - i * 4 * 40,
+                          GameSettings.cy - j * 6 * 40)
+                change_borders(GameSettings.cx - i * 6 * 40, GameSettings.cy - j * 6 * 40, [l])
+                draw_rect(GameSettings.cx - i * 12 * 40, GameSettings.cy - j * 6 * 40, GameSettings.cx - i * 10 * 40,
+                          GameSettings.cy - j * 5 * 40)
+                draw_rect(GameSettings.cx - i * 10 * 40, GameSettings.cy - j * 5 * 40, GameSettings.cx - i * 10 * 40,
+                          GameSettings.cy - j * 3 * 40)
+                change_borders(GameSettings.cx - i * 10 * 40, GameSettings.cy - j * 5 * 40, [r])
+                draw_rect(GameSettings.cx - i * 12 * 40, GameSettings.cy - j * 3 * 40, GameSettings.cx - i * 12 * 40,
+                          GameSettings.cy - j * 40)
+                draw_rect(GameSettings.cx - i * 12 * 40, GameSettings.cy - j * 40, GameSettings.cx - i * 10 * 40,
+                          GameSettings.cy - j * 40)
+                change_borders(GameSettings.cx - i * 12 * 40, GameSettings.cy - j * 40, [l, d])
+                draw_rect(GameSettings.cx - i * 8 * 40, GameSettings.cy - j * 3 * 40, GameSettings.cx - i * 8 * 40,
+                          GameSettings.cy - j * 40)
+                draw_rect(GameSettings.cx - i * 8 * 40, GameSettings.cy - j * 40, GameSettings.cx - i * 6 * 40,
+                          GameSettings.cy - j * 40)
+                change_borders(GameSettings.cx - i * 8 * 40, GameSettings.cy - j * 40, [l, d])
+                draw_rect(GameSettings.cx - i * 2 * 40, GameSettings.cy - j * 2 * 40, GameSettings.cx - i * 40,
+                          GameSettings.cy - j * 40)
+                draw_rect(GameSettings.cx - i * 6 * 40, GameSettings.cy - j * 3 * 40, GameSettings.cx - i * 4 * 40,
+                          GameSettings.cy - j * 3 * 40)
+                draw_rect(GameSettings.cx - i * 4 * 40, GameSettings.cy - j * 4 * 40, GameSettings.cx - i * 4 * 40,
+                          GameSettings.cy - j * 2 * 40)
+                draw_rect(GameSettings.cx - i * 4 * 40, GameSettings.cy - j * 4 * 40, GameSettings.cx - i * 40,
+                          GameSettings.cy - j * 4 * 40)
+                draw_rect(GameSettings.cx - i * 2 * 40, GameSettings.cy - j * 6 * 40, GameSettings.cx - i * 2 * 40,
+                          GameSettings.cy - j * 4 * 40)
+                change_borders(GameSettings.cx - i * 4 * 40, GameSettings.cy - j * 3 * 40, [r])
+                change_borders(GameSettings.cx - i * 4 * 40, GameSettings.cy - j * 4 * 40, [l, u])
+                change_borders(GameSettings.cx - i * 2 * 40, GameSettings.cy - j * 4 * 40, [d])
             # центральная линия
-            draw_rect(cx, cy - 6 * 40, cx, cy - 6 * 40)
-            draw_rect(cx, cy + 6 * 40, cx, cy + 6 * 40)
-            draw_rect(cx - 4 * 40, cy, cx - 4 * 40, cy)
-            draw_rect(cx + 4 * 40, cy, cx + 4 * 40, cy)
+            draw_rect(GameSettings.cx, GameSettings.cy - 6 * 40, GameSettings.cx, GameSettings.cy - 6 * 40)
+            draw_rect(GameSettings.cx, GameSettings.cy + 6 * 40, GameSettings.cx, GameSettings.cy + 6 * 40)
+            draw_rect(GameSettings.cx - 4 * 40, GameSettings.cy, GameSettings.cx - 4 * 40, GameSettings.cy)
+            draw_rect(GameSettings.cx + 4 * 40, GameSettings.cy, GameSettings.cx + 4 * 40, GameSettings.cy)
         energy(5)  # энерджайзер - 5 случайных клеток
     else:
-        change_borders(upx, upy, ["up", "left"], False)  # 40 по x и y между клетками
-        change_borders(dx, dy, ["right", "down"], False)
-        change_borders(upx, dy, ["down", "left"], False)
-        change_borders(dx, upy, ["up", "right"], False)
+        change_borders(GameSettings.upx, GameSettings.upy, ["up", "left"], False)  # 40 по x и y между клетками
+        change_borders(GameSettings.dx, GameSettings.dy, ["right", "down"], False)
+        change_borders(GameSettings.upx, GameSettings.dy, ["down", "left"], False)
+        change_borders(GameSettings.dx, GameSettings.upy, ["up", "right"], False)
         for i in range(1, 24):  # верхняя граница
-            change_borders(upx + i * 40, upy, ["up"], False)
+            change_borders(GameSettings.upx + i * 40, GameSettings.upy, ["up"], False)
         for i in range(1, 24):  # нижняя граница
-            change_borders(upx + i * 40, dy, ["down"], False)
+            change_borders(GameSettings.upx + i * 40, GameSettings.dy, ["down"], False)
         for i in range(1, 16):  # левая граница
 
-            change_borders(upx, upy + i * 40, ["left"], False)
+            change_borders(GameSettings.upx, GameSettings.upy + i * 40, ["left"], False)
         for i in range(1, 16):  # правая граница
-            change_borders(dx, upy + i * 40, ["right"], False)
-        maze(upx, upy, dx, dy, 1)  # генерация лабиринта
+            change_borders(GameSettings.dx, GameSettings.upy + i * 40, ["right"], False)
+        maze(GameSettings.upx, GameSettings.upy, GameSettings.dx, GameSettings.dy, 1)  # генерация лабиринта
         energy(15)
-        sqr = squares_all[(cx, cy)]
-        sqr.img = assets.get_image("flag")
+        sqr = GameSettings.squares_all[(GameSettings.cx, GameSettings.cy)]
+        sqr.img = GameSettings.assets.get_image("flag")
         sqr.img_rect = sqr.img.get_rect(center=(sqr.x, sqr.y))
-    for sq in squares_all.values():
+    for sq in GameSettings.squares_all.values():
         if sq.color != Colors.Black.value:
-            max_score += sq.pts
+            GameState.max_score += sq.pts
 
 
 # прорисовка границ и еды - разная в зависимости от intro
 def draw_borders(intro=False):
     if intro:
-        for sq in squares_all.values():
+        for sq in GameSettings.squares_all.values():
             sq.draw_lines()
     else:
-        for sq in squares_all.values():
+        for sq in GameSettings.squares_all.values():
             sq.draw_lines()
             sq.draw_food()
 
 
 def energy(n):  # энерджайзер
-    squares = [sq for sq in squares_all.values() if sq.color != Colors.Black.value and sq.img != assets.get_image("flag")]
+    squares = [sq for sq in GameSettings.squares_all.values() if
+               sq.color != Colors.Black.value and sq.img != GameSettings.assets.get_image("flag")]
     for sqr in random.sample(squares, n):
         sqr.food = pg.Rect(sqr.x, sqr.y, 7, 7)
         sqr.pts = 50
         sqr.e = True
         squares.remove(sqr)
     sqr = random.choice(squares)
-    sqr.img = random.choice([assets.get_image("cherry"), assets.get_image("strawberry"), assets.get_image("banana")])
+    sqr.img = random.choice([GameSettings.assets.get_image("cherry"), GameSettings.assets.get_image("strawberry"),
+                             GameSettings.assets.get_image("banana")])
     sqr.img_rect = sqr.img.get_rect(center=(sqr.x, sqr.y))
     sqr.pts = 100
 
 
 # игровое меню
 def game_intro():
+    init_music()
+    init_heroes()
+    init_field()
+
     gen_maze = 1
     intro = True
     # текст
-    text(10, "A.K. 2019 ©", Colors.White.value,  Colors.Black.value, dx - 40, dy + 40)
-    start = text(30, "Start Game", Colors.Yellow.value, Colors.Black.value, cx - 4 * 40, upy + 14 * 40)
-    e_maze = text(15, "Easy(classic pacman)", Colors.Yellow.value,  Colors.Black.value, cx - 6 * 40, upx + 15 * 40)
-    h_maze = text(15, "Hard(capture the flag)", Colors.Yellow.value,  Colors.Black.value, cx - 6 * 40, upx + 16 * 40)
+    Text(10, "A.K. 2019 ©", Colors.White.value, Colors.Black.value, GameSettings.dx - 40, GameSettings.dy + 40)
+    start = Text(30, "Start Game", Colors.Yellow.value, Colors.Black.value, GameSettings.cx - 4 * 40,
+                 GameSettings.upy + 14 * 40)
+    e_maze = Text(15, "Easy(classic pacman)", Colors.Yellow.value, Colors.Black.value, GameSettings.cx - 6 * 40,
+                  GameSettings.upx + 15 * 40)
+    h_maze = Text(15, "Hard(capture the flag)", Colors.Yellow.value, Colors.Black.value, GameSettings.cx - 6 * 40,
+                  GameSettings.upx + 16 * 40)
     # глаз за курсором
-    r_gh_x, r_gh_y = upx + 18 * 40, dy - 5 * 40
-    moving_eye(10, 5, r_gh_x - 9, r_gh_y - 10)
-    moving_eye(10, 5, r_gh_x + 9, r_gh_y - 10)
+    r_gh_x, r_gh_y = GameSettings.upx + 18 * 40, GameSettings.dy - 5 * 40
+    MovingEye(10, 5, r_gh_x - 9, r_gh_y - 10)
+    MovingEye(10, 5, r_gh_x + 9, r_gh_y - 10)
 
-    b_gh_x, b_gh_y = upx + 14 * 40, dy - 5 * 40
-    moving_eye(10, 5, b_gh_x - 9, b_gh_y - 10)
-    moving_eye(10, 5, b_gh_x + 9, b_gh_y - 10)
+    b_gh_x, b_gh_y = GameSettings.upx + 14 * 40, GameSettings.dy - 5 * 40
+    MovingEye(10, 5, b_gh_x - 9, b_gh_y - 10)
+    MovingEye(10, 5, b_gh_x + 9, b_gh_y - 10)
 
-    o_gh_x, o_gh_y = upx + 10 * 40, dy - 5 * 40
-    moving_eye(10, 5, o_gh_x - 9, o_gh_y - 10)
-    moving_eye(10, 5, o_gh_x + 9, o_gh_y - 10)
+    o_gh_x, o_gh_y = GameSettings.upx + 10 * 40, GameSettings.dy - 5 * 40
+    MovingEye(10, 5, o_gh_x - 9, o_gh_y - 10)
+    MovingEye(10, 5, o_gh_x + 9, o_gh_y - 10)
 
-    p_gh_x, p_gh_y = upx + 6 * 40, dy - 5 * 40
-    moving_eye(10, 5, p_gh_x - 9, p_gh_y - 10)
-    moving_eye(10, 5, p_gh_x + 9, p_gh_y - 10)
+    p_gh_x, p_gh_y = GameSettings.upx + 6 * 40, GameSettings.dy - 5 * 40
+    MovingEye(10, 5, p_gh_x - 9, p_gh_y - 10)
+    MovingEye(10, 5, p_gh_x + 9, p_gh_y - 10)
 
     while intro:
-        DISPLAYSURF.fill(Colors.Black.value)
+        GameSettings.DISPLAYSURF.fill(Colors.Black.value)
         # текст
-        for t in texts:
+        for t in GameState.texts:
             t.draw()
 
-        DISPLAYSURF.blit(assets.get_image("name"), assets.get_image("name").get_rect(center=(cx, cy - 3 * 40)))
+        GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("name"),
+                                      GameSettings.assets.get_image("name").get_rect(
+                                          center=(GameSettings.cx, GameSettings.cy - 3 * 40)))
         # глаз за курсором
-        DISPLAYSURF.blit(assets.get_image("gh_r_logo"), assets.get_image("gh_r_logo").get_rect(center=(r_gh_x, r_gh_y)))
-        DISPLAYSURF.blit(assets.get_image("gh_b_logo"), assets.get_image("gh_b_logo").get_rect(center=(b_gh_x, b_gh_y)))
-        DISPLAYSURF.blit(assets.get_image("gh_o_logo"), assets.get_image("gh_o_logo").get_rect(center=(o_gh_x, o_gh_y)))
-        DISPLAYSURF.blit(assets.get_image("gh_p_logo"), assets.get_image("gh_p_logo").get_rect(center=(p_gh_x, p_gh_y)))
+        GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("gh_r_logo"),
+                                      GameSettings.assets.get_image("gh_r_logo").get_rect(center=(r_gh_x, r_gh_y)))
+        GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("gh_b_logo"),
+                                      GameSettings.assets.get_image("gh_b_logo").get_rect(center=(b_gh_x, b_gh_y)))
+        GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("gh_o_logo"),
+                                      GameSettings.assets.get_image("gh_o_logo").get_rect(center=(o_gh_x, o_gh_y)))
+        GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("gh_p_logo"),
+                                      GameSettings.assets.get_image("gh_p_logo").get_rect(center=(p_gh_x, p_gh_y)))
 
         if gen_maze == 1:
-            pg.draw.circle(DISPLAYSURF, Colors.Green.value, (e_maze.textRectObj[0] - 7, e_maze.y), 5)
+            pg.draw.circle(GameSettings.DISPLAYSURF, Colors.Green.value, (e_maze.textRectObj[0] - 7, e_maze.y), 5)
         elif gen_maze == 2:
-            pg.draw.circle(DISPLAYSURF, Colors.Green.value, (h_maze.textRectObj[0] - 7, h_maze.y), 5)
-        for e in eyes:
+            pg.draw.circle(GameSettings.DISPLAYSURF, Colors.Green.value, (h_maze.textRectObj[0] - 7, h_maze.y), 5)
+        for e in GameState.eyes:
             e.draw()
 
         for event in pg.event.get():
@@ -684,14 +511,17 @@ def game_intro():
             if event.type == pg.MOUSEBUTTONUP:
                 if start.textRectObj.collidepoint(pg.mouse.get_pos()):
                     intro = False
-                    texts.clear()
+                    GameState.texts.clear()
                     start_borders(gen_maze)
-                    global score
-                    score = text(15, 'Score: ' + str(pman.pts), Colors.White.value, Colors.Black.value, upx + 40, dy + 45)
-                    text(15, 'SHADOW', Colors.Red.value, Colors.Black.value, dx - 3 * 40, dy + 45)
-                    text(15, 'SPEEDY', Colors.Pink.value, Colors.Black.value, dx - 6 * 40, dy + 45)
-                    text(15, 'BASHFUL', Colors.Light_Blue.value, Colors.Black.value, dx - 9 * 40, dy + 45)
-                    text(15, 'POKEY', Colors.Orange.value, Colors.Black.value, dx - 12 * 40, dy + 45, )
+
+                    Text(15, 'SHADOW', Colors.Red.value, Colors.Black.value, GameSettings.dx - 3 * 40,
+                         GameSettings.dy + 45)
+                    Text(15, 'SPEEDY', Colors.Pink.value, Colors.Black.value, GameSettings.dx - 6 * 40,
+                         GameSettings.dy + 45)
+                    Text(15, 'BASHFUL', Colors.Light_Blue.value, Colors.Black.value, GameSettings.dx - 9 * 40,
+                         GameSettings.dy + 45)
+                    Text(15, 'POKEY', Colors.Orange.value, Colors.Black.value, GameSettings.dx - 12 * 40,
+                         GameSettings.dy + 45, )
                     game()
                 if e_maze.textRectObj.collidepoint(pg.mouse.get_pos()):
                     gen_maze = 1
@@ -699,7 +529,7 @@ def game_intro():
                     gen_maze = 2
 
         pg.display.update()
-        fpsClock.tick(FPS)
+        GameSettings.fpsClock.tick(GameSettings.FPS)
 
 
 # запуск игры
@@ -707,80 +537,82 @@ def game():
     chase_time = 10
     scatter_time = 5
     frightened_time = 20
-    global score
     gh_v = 30
     running = True
     while running:
         # очищение экрана
-        DISPLAYSURF.fill(Colors.Black.value)
+        GameSettings.DISPLAYSURF.fill(Colors.Black.value)
 
         # вставить текст:
-        score.text = 'Score: ' + str(pman.pts)
-        score.textSurfaceObj = score.fontObj.render(score.text, True, Colors.White.value, Colors.Black.value)
-        for t in texts:
+        GameState.score.text = 'Score: ' + str(GameState.pman.pts)
+        GameState.score.textSurfaceObj = GameState.score.fontObj.render(GameState.score.text, True, Colors.White.value,
+                                                                        Colors.Black.value)
+        for t in GameState.texts:
             t.draw()
 
         # жизни
-        for i in range(pman.lives):
-            DISPLAYSURF.blit(assets.get_image("p_right"), pg.Rect(dx - (20 - i) * 40, dy + 30, 20, 20))
+        for i in range(GameState.pman.lives):
+            GameSettings.DISPLAYSURF.blit(GameSettings.assets.get_image("p_right"),
+                                          pg.Rect(GameSettings.dx - (20 - i) * 40, GameSettings.dy + 30, 20, 20))
 
         # кнопка
-        for b in buttons:
+        for b in GameSettings.buttons:
             b.show()
         # границы
         draw_borders()
 
-        pman.show()
-        for gh in ghosts:
+        GameState.pman.show()
+        for gh in GameState.ghosts:
             gh.show()
 
-            if gh.rect.colliderect(pman.rect):  # пэкман пойман - reset
+            if gh.rect.colliderect(GameState.pman.rect):  # пэкман пойман - reset
                 running = False
                 if gh.mode != "frightened":
-                    pman.lives -= 1
-                    pman.x = pman.startx
-                    pman.y = pman.starty
-                    for gh in ghosts:
-                        gh.x = gh.startx
-                        gh.y = gh.starty
-                    pman.motion = "STOP"
-                    if pman.lives > -1:
+                    GameState.pman.lives -= 1
+                    GameState.pman.x = GameState.pman.startx
+                    GameState.pman.y = GameState.pman.starty
+                    for ghost in GameState.ghosts:
+                        ghost.x = ghost.startx
+                        ghost.y = ghost.starty
+                    GameState.pman.motion = "STOP"
+                    if GameState.pman.lives > -1:
                         running = True
                     else:
                         pg.mixer.music.stop()
-                        texts.clear()
-                        lose_page(pman.pts)
-                elif gh.image != assets.get_image("d_gh"):
-                    pman.pts += 100
+                        GameState.texts.clear()
+                        lose_page(GameState.pman.pts)
+                elif gh.image != GameSettings.assets.get_image("d_gh"):
+                    GameState.pman.pts += 100
                     running = True
-                    gh.image = assets.get_image("d_gh")
-                    gh.move = astar.a(gh.get_sq(), (gh.startx, gh.starty), game_graph)
+                    gh.image = GameSettings.assets.get_image("d_gh")
+                    gh.move = astar.a(gh.get_sq(), (gh.startx, gh.starty), GameSettings.game_graph)
                 else:
                     running = True
 
-            if len(game_graph[gh.get_sq()]) != 2 or gh.image == assets.get_image("d_gh"):  # менять направление только на развилках
+            if len(GameSettings.game_graph[gh.get_sq()]) != 2 or gh.image == GameSettings.assets.get_image(
+                    "d_gh"):  # менять направление только на развилках
 
                 gh.i = 0
                 if gh.mode == "chase":
-                    gh.move = astar.a(gh.get_sq(), gh.aim(), game_graph)
+                    gh.move = astar.a(gh.get_sq(), gh.aim(GameState.pman), GameSettings.game_graph)
 
                     if time.perf_counter() - gh.start_time >= chase_time:
                         gh.mode = "scatter"
                         gh.start_time = time.perf_counter()
                 if gh.mode == "scatter":
-                    gh.move = astar.a(gh.get_sq(), gh.hide, game_graph)
+                    gh.move = astar.a(gh.get_sq(), gh.hide, GameSettings.game_graph)
                     if time.perf_counter() - gh.start_time >= scatter_time:
                         gh.mode = "chase"
                         gh.start_time = time.perf_counter()
-                if gh.image == assets.get_image("d_gh"):
-                    gh.move = astar.a(gh.get_sq(), (gh.startx, gh.starty), game_graph)
+                if gh.image == GameSettings.assets.get_image("d_gh"):
+                    gh.move = astar.a(gh.get_sq(), (gh.startx, gh.starty), GameSettings.game_graph)
                     if gh.get_sq() == (gh.startx, gh.starty):
                         gh.mode = "chase"
                         gh.image = gh.default_image
                         gh.start_time = time.perf_counter()
 
                 elif gh.mode == "frightened":
-                    gh.move = [random.choice(game_graph[gh.get_sq()])]
+                    gh.move = [random.choice(GameSettings.game_graph[gh.get_sq()])]
                     if time.perf_counter() - gh.start_time >= frightened_time:
                         gh.image = gh.default_image
                         gh.mode = "chase"
@@ -789,10 +621,10 @@ def game():
 
             else:
                 gh.i = 0
-                if game_graph[gh.get_sq()][0] != gh.last_sq:
-                    gh.move = [game_graph[gh.get_sq()][0]]
+                if GameSettings.game_graph[gh.get_sq()][0] != gh.last_sq:
+                    gh.move = [GameSettings.game_graph[gh.get_sq()][0]]
                 else:
-                    gh.move = [game_graph[gh.get_sq()][1]]
+                    gh.move = [GameSettings.game_graph[gh.get_sq()][1]]
 
             if gh.move != False and gh.i < len(gh.move):
                 gh.ghm += 1
@@ -801,37 +633,36 @@ def game():
                     gh.x = gh.move[gh.i][0]
                     gh.y = gh.move[gh.i][1]
                     gh.i += 1
-                    if gh.mode == "frightened" and gh.image != assets.get_image("d_gh"):
-                        if gh.image == assets.get_image("gh_run_w"):
-                            gh.image = assets.get_image("gh_run_b")
+                    if gh.mode == "frightened" and gh.image != GameSettings.assets.get_image("d_gh"):
+                        if gh.image == GameSettings.assets.get_image("gh_run_w"):
+                            gh.image = GameSettings.assets.get_image("gh_run_b")
                         else:
-                            gh.image = assets.get_image("gh_run_w")
-                    gh.ghm = (gh.ghm + 1) % (gh_v)
+                            gh.image = GameSettings.assets.get_image("gh_run_w")
+                    gh.ghm = (gh.ghm + 1) % gh_v
 
         pg.display.update()
 
-        sq = squares_all[pman.get_sq()]
-        if pman.rect.contains(sq.food):  # если rect_еда внутри rect_pacman
+        sq = GameSettings.squares_all[GameState.pman.get_sq()]
+        if GameState.pman.rect.contains(sq.food):  # если rect_еда внутри rect_pacman
             if sq.color != Colors.Black.value:
                 sq.color = Colors.Black.value  # сделать еду невидимой
-                pman.pts += sq.pts  # очки за 1 еду
+                GameState.pman.pts += sq.pts  # очки за 1 еду
                 if sq.e:
-                    for gh in ghosts:
-                        if gh.image != assets.get_image("d_gh"):
+                    for gh in GameState.ghosts:
+                        if gh.image != GameSettings.assets.get_image("d_gh"):
                             gh.mode = "frightened"
-                            gh.image = assets.get_image("gh_run_w")
-                            start_time = time.perf_counter()
-                if sq.img == assets.get_image("flag"):
+                            gh.image = GameSettings.assets.get_image("gh_run_w")
+                if sq.img == GameSettings.assets.get_image("flag"):
                     running = False
-                    texts.clear()
-                    win_page(pman.pts)
+                    GameState.texts.clear()
+                    win_page(GameState.pman.pts)
                 if sq.img:
                     sq.img = False
             # проверка max_score
-            if pman.pts >= max_score:
+            if GameState.pman.pts >= GameState.max_score:
                 running = False
-                texts.clear()
-                win_page(pman.pts)
+                GameState.texts.clear()
+                win_page(GameState.pman.pts)
         for event in pg.event.get():
 
             if event.type == QUIT:
@@ -839,152 +670,154 @@ def game():
                 sys.exit()
             if event.type == pg.MOUSEBUTTONUP:  # нажатие, bs,bp - кнопки
 
-                if bs.rect.collidepoint(pg.mouse.get_pos()):
-                    if bs.sound:
+                if GameState.bs.rect.collidepoint(pg.mouse.get_pos()):
+                    if GameState.bs.sound:
                         pg.mixer.music.pause()
-                        bs.image = assets.get_image("sound_off")
-                        bs.sound = False
+                        GameState.bs.image = GameSettings.assets.get_image("sound_off")
+                        GameState.bs.sound = False
                     else:
                         pg.mixer.music.unpause()
-                        bs.image = assets.get_image("sound_on")
-                        bs.sound = True
-                if bp.rect.collidepoint(pg.mouse.get_pos()):
-                    bp.image = assets.get_image("b_unpause")
-                    bp.show()
+                        GameState.bs.image = GameSettings.assets.get_image("sound_on")
+                        GameState.bs.sound = True
+                if GameState.bp.rect.collidepoint(pg.mouse.get_pos()):
+                    GameState.bp.image = GameSettings.assets.get_image("b_unpause")
+                    GameState.bp.show()
                     running = False
                     pause_menu()
-                if hm.rect.collidepoint(pg.mouse.get_pos()):  # доделать
+                if GameState.hm.rect.collidepoint(pg.mouse.get_pos()):  # доделать
                     running = False
-                    texts.clear()
+                    GameState.texts.clear()
                     game_intro()
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_LEFT and right_way("left"):
-                    pman.x -= pman.v
-                    pman.motion = "LEFT"
+                    GameState.pman.x -= GameState.pman.v
+                    GameState.pman.motion = "LEFT"
 
                 elif event.key == pg.K_RIGHT and right_way("right"):
-                    pman.x += pman.v
-                    pman.motion = "RIGHT"
+                    GameState.pman.x += GameState.pman.v
+                    GameState.pman.motion = "RIGHT"
                 elif event.key == pg.K_UP and right_way("up"):
-                    pman.y -= pman.v
-                    pman.motion = "UP"
+                    GameState.pman.y -= GameState.pman.v
+                    GameState.pman.motion = "UP"
                 elif event.key == pg.K_DOWN and right_way("down"):
-                    pman.y += pman.v
-                    pman.motion = "DOWN"
+                    GameState.pman.y += GameState.pman.v
+                    GameState.pman.motion = "DOWN"
                 elif event.key == pg.K_LSHIFT:  # stop
-                    pman.v = 0
+                    GameState.pman.v = 0
                 elif event.key == pg.K_RSHIFT:  # hack
-                    pman.v += 1
+                    GameState.pman.v += 1
 
-        if pman.motion == "LEFT" and right_way("left"):
-            pman.x -= pman.v
-            if pman.eat % fps_eat >= fps_eat // 2:
-                pman.image = assets.get_image("p_left")
-
-            else:
-                pman.image = assets.get_image("p_left_eat")
-
-            if pman.x <= upx - 16:
-                pman.x = dx + 16
-            pman.eat = (pman.eat + 1) % fps_eat  # чередование картинок
-        if pman.motion == "RIGHT" and right_way("right"):
-            pman.x += pman.v
-            if pman.eat % fps_eat >= fps_eat // 2:
-                pman.image = assets.get_image("p_right")
+        if GameState.pman.motion == "LEFT" and right_way("left"):
+            GameState.pman.x -= GameState.pman.v
+            if GameState.pman.eat % GameSettings.fps_eat >= GameSettings.fps_eat // 2:
+                GameState.pman.image = GameSettings.assets.get_image("p_left")
 
             else:
-                pman.image = assets.get_image("p_right_eat")
+                GameState.pman.image = GameSettings.assets.get_image("p_left_eat")
 
-            if pman.x >= dx + 16:
-                pman.x = upx - 16
-            pman.eat = (pman.eat + 1) % fps_eat  # чередование картинок
-        if pman.motion == "UP" and right_way("up"):
-            pman.y -= pman.v
-            if pman.eat % fps_eat >= fps_eat // 2:
-                pman.image = assets.get_image("p_up")
-
-            else:
-                pman.image = assets.get_image("p_up_eat")
-
-            if pman.y <= upy - 16:
-                pman.y = dy + 16
-            pman.eat = (pman.eat + 1) % fps_eat  # чередование картинок
-        if pman.motion == "DOWN" and right_way("down"):
-            pman.y += pman.v
-            if pman.eat % fps_eat >= fps_eat // 2:
-                pman.image = assets.get_image("p_down")
-
+            if GameState.pman.x <= GameSettings.upx - 16:
+                GameState.pman.x = GameSettings.dx + 16
+            GameState.pman.eat = (GameState.pman.eat + 1) % GameSettings.fps_eat  # чередование картинок
+        if GameState.pman.motion == "RIGHT" and right_way("right"):
+            GameState.pman.x += GameState.pman.v
+            if GameState.pman.eat % GameSettings.fps_eat >= GameSettings.fps_eat // 2:
+                GameState.pman.image = GameSettings.assets.get_image("p_right")
 
             else:
-                pman.image = assets.get_image("p_down_eat")
+                GameState.pman.image = GameSettings.assets.get_image("p_right_eat")
 
-            if pman.y >= dy + 16:
-                pman.y = upy - 16
-            pman.eat = (pman.eat + 1) % fps_eat  # чередование картинок
+            if GameState.pman.x >= GameSettings.dx + 16:
+                GameState.pman.x = GameSettings.upx - 16
+            GameState.pman.eat = (GameState.pman.eat + 1) % GameSettings.fps_eat  # чередование картинок
+        if GameState.pman.motion == "UP" and right_way("up"):
+            GameState.pman.y -= GameState.pman.v
+            if GameState.pman.eat % GameSettings.fps_eat >= GameSettings.fps_eat // 2:
+                GameState.pman.image = GameSettings.assets.get_image("p_up")
 
-        fpsClock.tick(FPS)
+            else:
+                GameState.pman.image = GameSettings.assets.get_image("p_up_eat")
+
+            if GameState.pman.y <= GameSettings.upy - 16:
+                GameState.pman.y = GameSettings.dy + 16
+            GameState.pman.eat = (GameState.pman.eat + 1) % GameSettings.fps_eat  # чередование картинок
+        if GameState.pman.motion == "DOWN" and right_way("down"):
+            GameState.pman.y += GameState.pman.v
+            if GameState.pman.eat % GameSettings.fps_eat >= GameSettings.fps_eat // 2:
+                GameState.pman.image = GameSettings.assets.get_image("p_down")
+
+
+            else:
+                GameState.pman.image = GameSettings.assets.get_image("p_down_eat")
+
+            if GameState.pman.y >= GameSettings.dy + 16:
+                GameState.pman.y = GameSettings.upy - 16
+            GameState.pman.eat = (GameState.pman.eat + 1) % GameSettings.fps_eat  # чередование картинок
+
+        GameSettings.fpsClock.tick(GameSettings.FPS)
 
 
 def pause_menu():
     running = True
     while running:
-        bp.show()
+        GameState.bp.show()
         for event in pg.event.get():
             if event.type == pg.MOUSEBUTTONUP:
-                if bp.rect.collidepoint(pg.mouse.get_pos()):
-                    bp.image = assets.get_image("b_pause")
+                if GameState.bp.rect.collidepoint(pg.mouse.get_pos()):
+                    GameState.bp.image = GameSettings.assets.get_image("b_pause")
                     running = False
                     game()
             if event.type == QUIT:
                 pg.quit()
                 sys.exit()
         pg.display.update()
-        fpsClock.tick(FPS)
+        GameSettings.fpsClock.tick(GameSettings.FPS)
 
 
 def win_page(score):
-    DISPLAYSURF.fill(Colors.Black.value)
+    GameSettings.DISPLAYSURF.fill(Colors.Black.value)
     running = True
-    text(40, 'YOU WIN', Colors.Red.value, Colors.Black.value, cx, cy)
-    text(20, 'YOUR SCORE: ' + str(score), Colors.Red.value, Colors.Black.value, cx, cy + 2 * 40)
+    Text(40, 'YOU WIN', Colors.Red.value, Colors.Black.value, GameSettings.cx, GameSettings.cy)
+    Text(20, 'YOUR SCORE: ' + str(score), Colors.Red.value, Colors.Black.value, GameSettings.cx,
+         GameSettings.cy + 2 * 40)
 
     while running:
-        hm.show()
-        for t in texts:
+        GameState.hm.show()
+        for t in GameState.texts:
             t.draw()
         for event in pg.event.get():
             if event.type == pg.MOUSEBUTTONUP:
-                if hm.rect.collidepoint(pg.mouse.get_pos()):
-                    texts.clear()
+                if GameState.hm.rect.collidepoint(pg.mouse.get_pos()):
+                    GameState.texts.clear()
                     running = False
                     game_intro()
             if event.type == QUIT:
                 pg.quit()
                 sys.exit()
         pg.display.update()
-        fpsClock.tick(FPS)
+        GameSettings.fpsClock.tick(GameSettings.FPS)
 
 
 def lose_page(score):
-    DISPLAYSURF.fill(Colors.Black.value)
+    GameSettings.DISPLAYSURF.fill(Colors.Black.value)
     running = True
-    text(40, 'YOU LOSE', Colors.Red.value, Colors.Black.value, cx, cy)
-    text(20, 'YOUR SCORE: ' + str(score), Colors.Red.value, Colors.Black.value, cx, cy + 2 * 40)
+    Text(40, 'YOU LOSE', Colors.Red.value, Colors.Black.value, GameSettings.cx, GameSettings.cy)
+    Text(20, 'YOUR SCORE: ' + str(score), Colors.Red.value, Colors.Black.value, GameSettings.cx,
+         GameSettings.cy + 2 * 40)
     while running:
-        hm.show()
-        for t in texts:
+        GameState.hm.show()
+        for t in GameState.texts:
             t.draw()
         for event in pg.event.get():
             if event.type == pg.MOUSEBUTTONUP:
-                if hm.rect.collidepoint(pg.mouse.get_pos()):
-                    texts.clear()
+                if GameState.hm.rect.collidepoint(pg.mouse.get_pos()):
+                    GameState.texts.clear()
                     running = False
                     game_intro()
             if event.type == QUIT:
                 pg.quit()
                 sys.exit()
         pg.display.update()
-        fpsClock.tick(FPS)
+        GameSettings.fpsClock.tick(GameSettings.FPS)
 
 
 if __name__ == "__main__":
