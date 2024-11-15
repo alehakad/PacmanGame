@@ -25,4 +25,4 @@ A coursework project implementing a Pacman game using Pygame.
     ```
 
 ## Example
-[![Watch the demo video](media/thumbnail.png)](media/pacman_test.mkv)
+[![Watch the demo video](media/thumbnail.png)](media/pacman-test.mp4)
